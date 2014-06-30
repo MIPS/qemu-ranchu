@@ -1,0 +1,123 @@
+# Common routines - do not execute directly.
+
+# Sanitize environment
+set -e
+export LANG=C
+export LC_ALL=C
+
+_SHU_PROGDIR=$(dirname "$0")
+_SHU_PROGNAME=$(basename "$0")
+
+# Print an error message to stderr then exit the current process.
+panic () {
+    echo "ERROR: $@" >&2
+    exit 1
+}
+
+# Internal verbosity level. Note that this value is inherited from
+# the VERBOSE environment variable.
+_SHU_VERBOSE=${VERBOSE:-1}
+
+# Increment internal verbosity level.
+increment_verbosity () {
+    _SHU_VERBOSE=$(( $_SHU_VERBOSE + 1 ))
+}
+
+# Decrement internal verbosity level.
+decrement_verbosity () {
+    _SHU_VERBOSE=$(( $_SHU_VERBOSE - 1 ))
+}
+
+# Return internal verbosity level, clamped to 0 as a minimum bound.
+get_verbosity () {
+    local RET=$_SHU_VERBOSE
+    if [ "$RET" -lt 0 ]; then
+        RET=0
+    fi
+    echo "$RET"
+}
+
+# Used internally to conditionally print a message.
+# $1: message's verbosity level. If greater or equal than $_SHU_VERBOSE then
+#     the message will be ignored.
+# $2+: message to print to stdout.
+dump_n () {
+    local LEVEL=$1
+    shift
+    if [ "$LEVEL" -lt "$_SHU_VERBOSE" ]; then
+        printf "%s\n" "$@"
+    fi
+}
+
+# Dump a message to standard output.
+dump () {
+    dump_n 0 "$@"
+}
+
+# Dump a message to standard output if --verbose was used.
+log () {
+    dump_n 1 "$@"
+}
+
+# Dump a message to standard output if --verbose --verbose is used.
+log2 () {
+    dump_n 2 "$@"
+}
+
+# Run a command, output depends on verbosity level
+run () {
+    local VERBOSE=$_SHU_VERBOSE
+    if [ "$VERBOSE" -lt 0 ]; then
+        VERBOSE=0
+    fi
+    if [ "$VERBOSE" -gt 1 ]; then
+        echo "COMMAND: $@"
+    fi
+    case $VERBOSE in
+        0)
+             "$@" >/dev/null >&2
+             ;;
+        1)
+            "$@" >/dev/null
+            ;;
+        *)
+            "$@"
+            ;;
+    esac
+}
+
+program_directory () {
+    printf "%s" "$_SHU_PROGDIR"
+}
+
+program_name () {
+    printf "%s" "$_SHU_PROGNAME"
+}
+
+
+# Unpack a given archive into a given destination directory.
+# $1: Archive path
+# $2: Destination directory
+unpack_archive () {
+    local PKG_PATH="$1"
+    local DEST_DIR="$2"
+    case $PKG in
+        *.tar.gz|*.tar.bz2|*.tar.xz)
+            run tar xf "$PKG_PATH" -C "$DEST_DIR"
+            ;;
+        *.zip)
+            run unzip -q -o -d "$DEST_DIR" "$PKG_PATH"
+            ;;
+        *)
+            panic "Unsupported package format: $PKG_PATH"
+            ;;
+    esac
+}
+
+shell_import () {
+    local SCRIPT="$_SHU_PROGDIR/$1"
+    if [ ! -f "$SCRIPT" ]; then
+        panic "Missing script: $SCRIPT"
+    fi
+    . "$SCRIPT"
+}
