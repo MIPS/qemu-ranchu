@@ -1,12 +1,28 @@
 # Default values for all build scripts.
 
-SOURCES_PACKAGES="\
-zlib-1.2.8.tar.gz \
-libpng-1.6.12.tar.xz \
-libffi-3.1.tar.gz \
+SOURCE_PACKAGES="\
+expat-2.1.0.tar.gz \
 gettext-0.19.1.tar.xz \
 glib-2.41.0.tar.xz \
-expat-2.1.0.tar.gz \
+libffi-3.1.tar.gz \
+libiconv-1.14.tar.gz \
+libpng-1.6.12.tar.xz \
 pixman-0.32.4.tar.gz \
 SDL-1.2.15.tar.gz \
+zlib-1.2.8.tar.gz \
 "
+
+# Extract the version number from a source package.
+# $1: Unversioned and unsuffixed package name (e.g. "zlib")
+# Out: package version (e.g. "1.2.8")
+get_source_package_version () {
+    echo "$SOURCE_PACKAGES" | tr ' ' '\n' | \
+        grep -e "^$1" | sed -e "s|^$1-\(.*\)\.tar\..z$|\\1|g"
+}
+
+# Extract the package name for a given library.
+# $1: Unversioned and unsuffixed package name (e.g. "zlib")
+# Out: package name (e.g. "zlib-1.2.8.tar.gz")
+get_source_package_name () {
+    echo "$SOURCE_PACKAGES" | tr ' ' '\n' | grep -e "^$1"
+}

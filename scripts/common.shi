@@ -74,10 +74,10 @@ run () {
         echo "COMMAND: $@"
     fi
     case $VERBOSE in
-        0)
-             "$@" >/dev/null >&2
+        0|1)
+             "$@" >/dev/null 2>&1
              ;;
-        1)
+        2)
             "$@" >/dev/null
             ;;
         *)
@@ -86,14 +86,101 @@ run () {
     esac
 }
 
+# Return the current script's directory.
 program_directory () {
     printf "%s" "$_SHU_PROGDIR"
 }
 
+# Return the current script's filename.
 program_name () {
     printf "%s" "$_SHU_PROGNAME"
 }
 
+# Return the value of a given named variable.
+# $1: variable name
+#
+# example:
+#    FOO=BAR
+#    BAR=ZOO
+#    echo `var_value $FOO`
+#    will print 'ZOO'
+#
+var_value () {
+    eval printf %s \"\$$1\"
+}
+
+# Return success if variable $1 is set and non-empty, failure otherwise.
+# $1: Variable name.
+# Usage example:
+#   if var_is_set FOO; then
+#      .. Do something the handle FOO condition.
+#   fi
+var_is_set () {
+    test -n "$(var_value $1)"
+}
+
+# Set the value of a given name variables.
+# $1: Variable name.
+# $2+: Variable value.
+# example:
+#    FOO=BAR
+#    var_assign $FOO bar
+# is equivalent to
+#    BAR=bar
+var_assign () {
+    local _var_assign_varname
+    _var_assign_varname=$1
+    shift
+    eval $_var_assign_varname=\'"$*"\'
+}
+
+# Append a space-separated list of items to a given variable.
+# $1: Variable name.
+# $2+: Variable value.
+# Example:
+#   FOO=
+#   var_append FOO foo    (FOO is now 'foo')
+#   var_append FOO bar    (FOO is now 'foo bar')
+#   var_append FOO zoo    (FOO is now 'foo bar zoo')
+var_append () {
+    local _var_append_varname
+    _var_append_varname=$1
+    shift
+    if test $(var_value $_var_append_varname); then
+        eval $_var_append_varname=\$$_var_append_varname\'\ "$*"\'
+    else
+        eval $_var_append_varname=\'"$*"\'
+    fi
+}
+
+# Import shell script $1. Similar to sourcing the script except
+# that each script will only be sourced once, even with multiple
+# dependencies.
+shell_import () {
+    local SCRIPT="$_SHU_PROGDIR/$1"
+    if [ ! -f "$SCRIPT" ]; then
+        panic "Missing script: $SCRIPT"
+    fi
+    local SCRIPT_TAG=_SHU_SHELL_SCRIPT_TAG__${1%%.shi}
+    SCRIPT_TAG=$(echo "$SCRIPT_TAG" | tr '-' '_')
+	case $(var_value $SCRIPT_TAG) in
+        imported)
+            # Script is already imported.
+            return 0
+            ;;
+        importing)
+            # Script is already being imported, this is
+            # a circular dependency.
+            panic "Circular dependency when trying to import $1"
+            ;;
+        *)
+            # Import the script.
+            var_assign $SCRIPT_TAG importing
+            . "$SCRIPT"
+            var_assign $SCRIPT_TAG imported
+            ;;
+    esac
+}
 
 # Unpack a given archive into a given destination directory.
 # $1: Archive path
@@ -101,7 +188,7 @@ program_name () {
 unpack_archive () {
     local PKG_PATH="$1"
     local DEST_DIR="$2"
-    case $PKG in
+    case $PKG_PATH in
         *.tar.gz|*.tar.bz2|*.tar.xz)
             run tar xf "$PKG_PATH" -C "$DEST_DIR"
             ;;
@@ -114,10 +201,98 @@ unpack_archive () {
     esac
 }
 
-shell_import () {
-    local SCRIPT="$_SHU_PROGDIR/$1"
-    if [ ! -f "$SCRIPT" ]; then
-        panic "Missing script: $SCRIPT"
+# Return the build machine's operating system tag.
+# Valid return values are:
+#    linux
+#    darwin
+#    freebsd
+#    windows   (really MSys)
+#    cygwin
+get_build_os () {
+    if [ -z "$_SHU_BUILD_OS" ]; then
+        _SHU_BUILD_OS=$(uname -s)
+        case $_SHU_BUILD_OS in
+            Darwin)
+                _SHU_BUILD_OS=darwin
+                ;;
+            FreeBsd)  # note: this is not tested
+                _SHU_BUILD_OS=freebsd
+                ;;
+            Linux)
+                # note that building  32-bit binaries on x86_64 is handled later
+                _SHU_BUILD_OS=linux
+                ;;
+            CYGWIN*|*_NT-*)
+                _SHU_BUILD_OS=windows
+                if [ "x$OSTYPE" = xcygwin ] ; then
+                    _SHU_BUILD_OS=cygwin
+                fi
+                ;;
+        esac
     fi
-    . "$SCRIPT"
+    echo "$_SHU_BUILD_OS"
+}
+
+# Return the executable extension for a given operating system tag.
+# $1: operating system tag.
+_shu_get_exe_extension_for () {
+    case $1 in
+        windows|cygwin)
+            echo ".exe"
+            ;;
+        *)
+            echo ""
+    esac
+}
+
+# Return the dynamic library extension for a given operating system tag.
+# $1: operating system tag.
+_shu_get_dll_extension_for () {
+    case $1 in
+        darwin)
+            echo ".dylib"
+            ;;
+        windows|cygwin)
+            echo ".dll"
+            ;;
+        *)
+            echo ".so"
+            ;;
+    esac
+}
+
+# Return the extension of executables on the build machine.
+get_build_exe_extension () {
+    if [ -z "$_SHU_BUILD_EXE_EXTENSION_DEFINED" ]; then
+        _SHU_BUILD_EXE_EXTENSION=$(_shu_get_exe_extension_for $(get_build_os))
+        _SHU_BUILD_EXE_EXTENSION_DEFINED=true
+    fi
+    echo "$_SHU_BUILD_EXE_EXTENSION"
+}
+
+# Return the extension of dynamic libraries on the build machine.
+get_build_dll_extension () {
+    if [ -z "$_SHU_BUILD_DLL_EXTENSION_DEFINED" ]; then
+        _SHU_BUILD_DLL_EXTENSION=$(_shu_get_dll_extension_for $(get_build_os))
+        _SHU_BUILD_DLL_EXTENSION_DEFINED=true
+    fi
+    echo "$_SHU_BUILD_DLL_EXTENSION"
+}
+
+# Return the number of CPU cores on the build machine.
+get_build_num_cores () {
+    case $(get_build_os) in
+        linux)
+            grep -c -e processor /proc/cpuinfo
+            ;;
+        darwin|freebsd)
+            sysctl -n hw.ncpu
+            ;;
+        windows|cygwin)
+            echo "${NUMBER_OF_PROCESSORS:-1}"
+            ;;
+        *)
+            echo "1"
+            ;;
+    esac
 }
