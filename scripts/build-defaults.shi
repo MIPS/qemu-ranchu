@@ -8,6 +8,7 @@ libffi-3.1.tar.gz \
 libiconv-1.14.tar.gz \
 libpng-1.6.12.tar.xz \
 pixman-0.32.4.tar.gz \
+pkg-config-0.28.tar.gz \
 SDL-1.2.15.tar.gz \
 zlib-1.2.8.tar.gz \
 "
