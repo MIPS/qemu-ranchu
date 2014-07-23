@@ -3,12 +3,95 @@
 . $(dirname "$0")/common.shi
 shell_import build-defaults.shi
 
+OPT_BUILD_DIR=
+OPT_HELP=
+OPT_NO_CCACHE=
+OPT_NUM_JOBS=
+
+for OPT; do
+    OPTARG=$(expr "x$OPT" : "x[^=]*=\(.*\)" || true)
+    case $OPT in
+        --build-dir=*)
+            OPT_BUILD_DIR=$OPTARG
+            ;;
+        --help|-?)
+            OPT_HELP=true
+            ;;
+        -j*)
+            OPT_NUM_JOBS=${OPT##-j}
+            ;;
+        --jobs=*)
+            OPT_NUM_JOBS=$OPTARG
+            ;;
+        --no-ccache)
+            OPT_NO_CCACHE=true
+            ;;
+        --quiet)
+            decrement_verbosity
+            ;;
+        --verbose)
+            increment_verbosity
+            ;;
+        -*)
+            panic "Unknown option '$OPT', see --help."
+            ;;
+        *)
+            PARAM_COUNT=$(( $PARAM_COUNT + 1))
+            var_assign PARAM_${PARAM_COUNT} "$OPT"
+            ;;
+    esac
+done
+
+if [ "$OPT_HELP" ]; then
+    cat <<EOF
+Usage: $(program_name) [options]  <qemu-android-dir> <aosp-dir>
+
+Rebuild qemu-android binaries from scratch. This requires two other
+directories to be available:
+
+  <qemu-android-dir>
+      Path to a checkout of the QEMU-Android sources from
+      https://qemu-android.googlesource.com/qemu-android
+
+  <aosp-dir>
+      Path to a checkout of an AOSP workspace. This is only used to
+      use the prebuilts toolchains under prebuilts/gcc/
+
+Valid options:
+    --help|-?           Print this message.
+    --verbose           Increase verbosity.
+    --quiet             Decrease verbosity.
+    --build-dir=<path>  Use specific build directory (default is temporary).
+    --no-ccache         Don't try to probe and use ccache during build.
+    -j<count>           Run <count> parallel build jobs.
+    --jobs=<count>      Same as -j<count>.
+
+EOF
+    exit 0
+fi
+
+if [ "$PARAM_COUNT" != 2 ]; then
+    panic "This script requires two arguments, see --help for details."
+fi
+
+QEMU_ANDROID=$PARAM_1
+if [ ! -f "$QEMU_ANDROID/include/qemu-common.h" ]; then
+    panic "Not a valid qemu-android source directory: $QEMU_ANDROID"
+fi
+
+AOSP_SOURCE_DIR=$PARAM_2
+if [ ! -d "$AOSP_SOURCE_DIR"/prebuilts/gcc ]; then
+    panic "Not a valid AOSP checkout directory: $AOSP_SOURCE_DIR"
+fi
+
 # Do we have ccache ?
-CCACHE=$(which ccache 2>/dev/null)
-if [ "$CCACHE" ]; then
-    log "Found ccache as: $CCACHE"
-else
-    log "Cannot find ccache in PATH."
+if [ -z "$OPT_NO_CCACHE" ]; then
+    CCACHE=$(which ccache 2>/dev/null)
+    if [ "$CCACHE" ]; then
+        log "Found ccache as: $CCACHE"
+    else
+        log "Cannot find ccache in PATH."
+    fi
 fi
 
 ARCHIVE_DIR=$(dirname "$0")/../archive
@@ -20,25 +103,36 @@ log "Using archive directory: $ARCHIVE_DIR"
 
 HOST_OS=linux-x86_64
 
-# TODO(digit): Take these from command-line parameters.
-AOSP_SOURCE_DIR=/opt/digit/repo/aosp
-QEMU_ANDROID=$UPSTREAM/qemu-android
+if [ "$OPT_BUILD_DIR" ]; then
+    TEMP_DIR=$OPT_BUILD_DIR
+else
+    TEMP_DIR=/tmp/$USER-build-qemu-ranchu-$$
+    log "Auto-config: --build-dir=$TEMP_DIR"
+fi
+run mkdir -p "$TEMP_DIR" ||
+panic "Could not create build directory: $TEMP_DIR"
 
-TEMP_DIR=/tmp/build-qemu-android-aarch64-100
-mkdir -p "$TEMP_DIR"
-rm -rf "$TEMP_DIR"/*
+log "Cleaning up build directory."
+run rm -rf "$TEMP_DIR"/*
 
-NUM_JOBS=$(get_build_num_cores)
-log "Parallel jobs count: $NUM_JOBS"
+if [ "$OPT_NUM_JOBS" ]; then
+    NUM_JONS=$OPT_NUM_JOBS
+    log "Parallel jobs count: $NUM_JOBS"
+else
+    NUM_JOBS=$(get_build_num_cores)
+    log "Auto-config: --jobs=$NUM_JOBS"
+fi
 
 ORIGINAL_PATH=$PATH
 
 export PKG_CONFIG=$(which pkg-config 2>/dev/null)
-if [ -z "$PKG_CONFIG" ]; then
-    panic "You must have pkg-config installed on this system!"
+if [ "$PKG_CONFIG" ]; then
+    log "Found pkg-config at: $PKG_CONFIG"
+else
+    log "pkg-config is not installed on this system."
 fi
 
-# Generate a small wrapper program
+# Generate a small toolchain wrapper program
 #
 # $1: program name, without any prefix (e.g. gcc, g++, ar, etc..)
 # $2: source prefix (e.g. 'i586-mingw32msvc-')
@@ -225,6 +319,32 @@ do_windows_zlib_package () {
     )
 }
 
+do_zlib_package () {
+    local ZLIB_VERSION ZLIB_PACKAGE
+    local LOC LDFLAGS
+    case $CURRENT_HOST in
+        *-x86)
+            LOC=-m32
+            LDFLAGS=-m32
+            ;;
+        *-x86_64)
+            LOC=-m64
+            LDFLAGS=-m64
+            ;;
+    esac
+    ZLIB_VERSION=$(get_source_package_version zlib)
+    dump "$CURRENT_TEXT Building zlib-$ZLIB_VERSION"
+    ZLIB_PACKAGE=$(get_source_package_name zlib)
+    unpack_archive "$ARCHIVE_DIR/$ZLIB_PACKAGE" "$BUILD_DIR"
+    (
+        run cd "$BUILD_DIR/zlib-$ZLIB_VERSION"
+        export CROSS_PREFIX=${GNU_CONFIG_HOST}-
+        run ./configure --prefix=$PREFIX
+        run make -j$NUM_JOBS
+        run make install
+    )
+}
+
 require_program () {
     local VARNAME PROGNAME CMD
     VARNAME=$1
@@ -304,6 +424,7 @@ do_autotools_package () {
         run cd "$BUILD_DIR/$PKG-$PKG_VERSION"
         export LDFLAGS="-L$PREFIX/lib"
         export CPPFLAGS="-L$PREFIX/include"
+        export PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig"
         run ./configure \
             --prefix=$PREFIX \
             --host=$GNU_CONFIG_HOST \
@@ -328,11 +449,15 @@ build_qemu_android () {
         windows-*)
             do_windows_zlib_package
             ;;
+        *)
+            do_zlib_package
+            ;;
     esac
 
-    # Handle libpng
-    do_autotools_package libpng
+    # libffi is required by glib.
+    do_autotools_package libffi
 
+    # libiconv is required by gettext on windows.
     case $1 in
         windows-*)
             do_autotools_package libiconv \
@@ -340,18 +465,20 @@ build_qemu_android () {
             ;;
     esac
 
+    # gettext is required by glib
     do_autotools_package gettext \
         --disable-rpath \
         --disable-acl \
         --disable-curses \
         --disable-openmp \
         --disable-java \
-        --disable-rpath \
+        --disable-native-java \
         --without-emacs \
-        --disable-c++
+        --disable-c++ \
+        --without-libexpat-prefix \
 
-    do_autotools_package libffi
 
+    # glib is required by pkg-config and qemu-android
     case $1 in
         windows-x86)
             do_windows_glib_package 32
@@ -361,16 +488,33 @@ build_qemu_android () {
             ;;
         *)
             do_autotools_package glib \
-                --disable-man \
-                --disable-gtk-doc \
                 --disable-always-build-tests \
+                --disable-debug \
+                --disable-fam \
+                --disable-gtk-doc \
+                --disable-gtk-doc-html \
+                --disable-gtk-doc-pdf \
                 --disable-installed-tests \
+                --disable-libelf \
+                --disable-man \
+                --disable-selinux \
+                --disable-xattr \
                 --enable-included-printf
             ;;
     esac
 
+    # pkg-config is required by qemu-android, and not available on
+    # Windows and OS X
+    do_autotools_package pkg-config \
+        --without-pc-path \
+        --disable-host-tool
+
+    # Handle libpng
+    do_autotools_package libpng
+
     do_autotools_package pixman \
-        --disable-gtk
+        --disable-gtk \
+        --disable-libpng
 
     do_autotools_package SDL \
         --disable-audio \
@@ -379,18 +523,49 @@ build_qemu_android () {
         --disable-file \
         --disable-threads
 
-    export SDL_CONFIG=$PREFIX/bin/sdl-config
+    # The SDL build script install a buggy sdl.pc when cross-compiling for
+    # Windows as a static library. I.e. it lacks many of the required
+    # libraries, that are part of --static-libs. Patch it directly
+    # instead.
+    case $1 in
+        windows-*)
+            sed -i -e 's|^Libs: -L\${libdir}  -lmingw32 -lSDLmain -lSDL  -mwindows|Libs: -lmingw32 -lSDLmain -lSDL  -mwindows  -liconv -lm -luser32 -lgdi32 -lwinmm -ldxguid|g' $PREFIX/lib/pkgconfig/sdl.pc
+            ;;
+    esac
+
+    SDL_CONFIG=$PREFIX/bin/sdl-config
+    PKG_CONFIG_LIBDIR=$PREFIX/lib/pkgconfig
+
+    case $1 in
+        windows-*)
+            # Use the host version, or the build will freeze.
+            PKG_CONFIG=pkg-config
+            ;;
+        *)
+            PKG_CONFIG=$PREFIX/bin/pkg-config
+            ;;
+    esac
+    export SDL_CONFIG PKG_CONFIG PKG_CONFIG_LIBDIR
 
     dump "$CURRENT_TEXT Building qemu-android"
     (
         run mkdir -p "$BUILD_DIR/qemu-android"
         run rm -rf "$BUILD_DIR"/qemu-android/*
         run cd "$BUILD_DIR/qemu-android"
+        EXTRA_LDFLAGS="-L$PREFIX/lib -static-libgcc -static-libstdc++"
+        case $1 in
+            windows-*)
+                ;;
+            *)
+                EXTRA_LDFLAGS="$EXTRA_LDFLAGS -ldl -lm"
+                ;;
+        esac
         run $QEMU_ANDROID/configure \
             --cross-prefix=$CROSS_PREFIX \
             --target-list=aarch64-softmmu \
             --prefix=$PREFIX \
-            --extra-ldflags="-L$PREFIX/lib -static-libgcc -static-libstdc++" \
+            --extra-cflags="-I$PREFIX/include" \
+            --extra-ldflags="$EXTRA_LDFLAGS" \
             --disable-attr \
             --disable-blobs \
             --disable-cap-ng \
