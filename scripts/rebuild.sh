@@ -86,7 +86,7 @@ fi
 
 # Do we have ccache ?
 if [ -z "$OPT_NO_CCACHE" ]; then
-    CCACHE=$(which ccache 2>/dev/null)
+    CCACHE=$(which ccache 2>/dev/null || true)
     if [ "$CCACHE" ]; then
         log "Found ccache as: $CCACHE"
     else
