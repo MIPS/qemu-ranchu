@@ -101,7 +101,27 @@ fi
 ARCHIVE_DIR=$(cd "$ARCHIVE_DIR" && pwd -P)
 log "Using archive directory: $ARCHIVE_DIR"
 
-HOST_OS=linux-x86_64
+case $(uname -s) in
+    Linux)
+        BUILD_OS=linux-x86_64
+        ;;
+    Darwin)
+        BUILD_OS=darwin-x86_64
+        ;;
+    *)
+        panic "Your operating system is not supported!"
+        ;;
+esac
+
+case $BUILD_OS in
+    darwin-*)
+        # Force the use of the 10.8 SDK on OS X, this
+        # ensures that the generated binaries run properly
+        # on that platform, and also avoids build failures
+        # in SDL!!
+        export SDKROOT=macosx10.8
+        ;;
+esac
 
 if [ "$OPT_BUILD_DIR" ]; then
     TEMP_DIR=$OPT_BUILD_DIR
@@ -230,6 +250,12 @@ prepare_build_for_host () {
             TOOLCHAIN_PREFIX=x86_64-w64-mingw32-
             HOST_EXE_EXTENSION=.exe
             ;;
+        darwin-*)
+            # Use host GCC for now.
+            PREBUILT_TOOLCHAIN_DIR=
+            TOOLCHAIN_PREFIX=
+            HOST_EXE_EXTENSION=
+            ;;
         *)
             panic "Host system '$CURRENT_HOST' is not supported by this script!"
             ;;
@@ -248,10 +274,22 @@ prepare_build_for_host () {
         windows-x86_64)
             GNU_CONFIG_HOST=x86_64-w64-mingw32
             ;;
+        darwin-*)
+            # Use host compiler.
+            GNU_CONFIG_HOST=
+            ;;
         *)
             panic "Host system '$CURRENT_HOST' is not supported by this script!"
             ;;
     esac
+
+    if [ "$GNU_CONFIG_HOST" ]; then
+        GNU_CONFIG_HOST_FLAG="--host=$GNU_CONFIG_HOST"
+        GNU_CONFIG_HOST_PREFIX=${GNU_CONFIG_HOST}-
+    else
+        GNU_CONFIG_HOST_FLAG=
+        GNU_CONFIG_HOST_PREFIX=
+    fi
 
     case $CURRENT_HOST in
         *-x86)
@@ -284,11 +322,13 @@ prepare_build_for_host () {
     EXTRA_CXXFLAGS="$EXTRA_CXXFLAGS -I$PREFIX/include"
     EXTRA_LDFLAGS="$EXTRA_LDFLAGS -L$PREFIX/lib"
 
-    log "$CURRENT_TEXT Generating $CROSS_PREFIX wrapper toolchain in $TOOLCHAIN_WRAPPER_DIR"
-    TOOLCHAIN_WRAPPER_DIR=$BUILD_DIR/toolchain-wrapper
-    gen_wrapper_toolchain "${GNU_CONFIG_HOST}-" "$PREBUILT_TOOLCHAIN_DIR/bin/$TOOLCHAIN_PREFIX" "$TOOLCHAIN_WRAPPER_DIR"
-    PATH=$TOOLCHAIN_WRAPPER_DIR:$PATH
-    log "$CURRENT_TEXT Path: $(echo \"$PATH\" | tr ' ' '\n')"
+    if [ "$GNU_CONFIG_HOST" ]; then
+      log "$CURRENT_TEXT Generating $CROSS_PREFIX wrapper toolchain in $TOOLCHAIN_WRAPPER_DIR"
+      TOOLCHAIN_WRAPPER_DIR=$BUILD_DIR/toolchain-wrapper
+      gen_wrapper_toolchain "${GNU_CONFIG_HOST_PREFIX}" "$PREBUILT_TOOLCHAIN_DIR/bin/$TOOLCHAIN_PREFIX" "$TOOLCHAIN_WRAPPER_DIR"
+      PATH=$TOOLCHAIN_WRAPPER_DIR:$PATH
+      log "$CURRENT_TEXT Path: $(echo \"$PATH\" | tr ' ' '\n')"
+    fi
 }
 
 # Handle zlib, only on Win32 because the zlib configure script
@@ -311,10 +351,10 @@ do_windows_zlib_package () {
     ZLIB_PACKAGE=$(get_source_package_name zlib)
     unpack_archive "$ARCHIVE_DIR/$ZLIB_PACKAGE" "$BUILD_DIR"
     (
-        run cd "$BUILD_DIR/zlib-$ZLIB_VERSION"
-        export BINARY_PATH=$PREFIX/bin
-        export INCLUDE_PATH=$PREFIX/include
-        export LIBRARY_PATH=$PREFIX/lib
+        run cd "$BUILD_DIR/zlib-$ZLIB_VERSION" &&
+        export BINARY_PATH=$PREFIX/bin &&
+        export INCLUDE_PATH=$PREFIX/include &&
+        export LIBRARY_PATH=$PREFIX/lib &&
         run make -fwin32/Makefile.gcc install PREFIX=$CROSS_PREFIX LOC=$LOC LDFLAGS=$LDFLAGS
     )
 }
@@ -338,7 +378,7 @@ do_zlib_package () {
     unpack_archive "$ARCHIVE_DIR/$ZLIB_PACKAGE" "$BUILD_DIR"
     (
         run cd "$BUILD_DIR/zlib-$ZLIB_VERSION"
-        export CROSS_PREFIX=${GNU_CONFIG_HOST}-
+        export CROSS_PREFIX=${GNU_CONFIG_HOST_PREFIX}
         run ./configure --prefix=$PREFIX
         run make -j$NUM_JOBS
         run make install
@@ -370,16 +410,16 @@ do_windows_glib_package () {
     unpack_archive "$ARCHIVE_DIR/$GLIB_PACKAGE" "$BUILD_DIR"
     GLIB_DIR=$BUILD_DIR/glib-$GLIB_VERSION
     (
-        run cd "$GLIB_DIR"
-        export LDFLAGS="-L$PREFIX/lib -L$PREFIX/lib$1"
-        export CPPFLAGS="-I$PREFIX/include -I$GLIB_DIR -I$GLIB_DIR/glib"
-        export CC=${GNU_CONFIG_HOST}-gcc
-        export CXX=${GNU_CONFIG_HOST}-c++
-        export PKG_CONFIG=$(which pkg-config)
-        export PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig
+        run cd "$GLIB_DIR" &&
+        export LDFLAGS="-L$PREFIX/lib -L$PREFIX/lib$1" &&
+        export CPPFLAGS="-I$PREFIX/include -I$GLIB_DIR -I$GLIB_DIR/glib" &&
+        export CC=${GNU_CONFIG_HOST_PREFIX}gcc &&
+        export CXX=${GNU_CONFIG_HOST_PREFIX}c++ &&
+        export PKG_CONFIG=$(which pkg-config) &&
+        export PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig &&
         run ./configure \
             --prefix=$PREFIX \
-            --host=$GNU_CONFIG_HOST \
+            $GNU_CONFIG_HOST_FLAG \
             --disable-shared \
             --with-threads=win32 \
             --with-pcre=internal \
@@ -389,18 +429,18 @@ do_windows_glib_package () {
             --disable-man \
             GLIB_GENMARSHAL=$GLIB_GENMARSHAL \
             GLIB_COMPILE_SCHEMAS=$GLIB_COMPILE_SCHEMAS \
-            GLIB_COMPILE_RESOURCES=$GLIB_COMPILE_RESOURCES
+            GLIB_COMPILE_RESOURCES=$GLIB_COMPILE_RESOURCES &&
 
         # Necessary to build gio stuff properly.
-        run ln -s "$GLIB_COMPILE_RESOURCES" gio/
+        run ln -s "$GLIB_COMPILE_RESOURCES" gio/ &&
 
-        run make -j$NUM_JOBS -C glib install sbin_PROGRAMS= noinst_PROGRAMS=
-        run make -j$NUM_JOBS -C gmodule install bin_PROGRAMS= sbin_PROGRAMS= noinst_PROGRAMS=
-        run make -j$NUM_JOBS -C gthread install bin_PROGRAMS= sbin_PROGRAMS= noinst_PROGRAMS=
-        run make -j$NUM_JOBS -C gobject install bin_PROGRAMS= sbin_PROGRAMS= noinst_PROGRAMS=
-        run make -j$NUM_JOBS -C gio install bin_PROGRAMS= sbin_PROGRAMS= noinst_PROGRAMS= MISC_STUFF=
-        run make -j$NUM_JOBS install-pkgconfigDATA
-        run make -j$NUM_JOBS -C m4macros install
+        run make -j$NUM_JOBS -C glib install sbin_PROGRAMS= noinst_PROGRAMS= &&
+        run make -j$NUM_JOBS -C gmodule install bin_PROGRAMS= sbin_PROGRAMS= noinst_PROGRAMS= &&
+        run make -j$NUM_JOBS -C gthread install bin_PROGRAMS= sbin_PROGRAMS= noinst_PROGRAMS= &&
+        run make -j$NUM_JOBS -C gobject install bin_PROGRAMS= sbin_PROGRAMS= noinst_PROGRAMS= &&
+        run make -j$NUM_JOBS -C gio install bin_PROGRAMS= sbin_PROGRAMS= noinst_PROGRAMS= MISC_STUFF= &&
+        run make -j$NUM_JOBS install-pkgconfigDATA &&
+        run make -j$NUM_JOBS -C m4macros install &&
 
         # Missing -lole32 results in link failure later!
         sed -i -e 's|\-lglib-2.0 -lintl|-lglib-2.0 -lole32 -lintl|g' \
@@ -421,17 +461,17 @@ do_autotools_package () {
     unpack_archive "$ARCHIVE_DIR/$PKG_NAME" "$BUILD_DIR" ||
     panic "Could not unpack $PKG_NAME"
     (
-        run cd "$BUILD_DIR/$PKG-$PKG_VERSION"
-        export LDFLAGS="-L$PREFIX/lib"
-        export CPPFLAGS="-L$PREFIX/include"
-        export PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig"
+        run cd "$BUILD_DIR/$PKG-$PKG_VERSION" &&
+        export LDFLAGS="-L$PREFIX/lib" &&
+        export CPPFLAGS="-I$PREFIX/include" &&
+        export PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig" &&
         run ./configure \
             --prefix=$PREFIX \
-            --host=$GNU_CONFIG_HOST \
+            $GNU_CONFIG_HOST_FLAG \
             --disable-shared \
             --with-pic \
-            "$@"
-        run make -j$NUM_JOBS
+            "$@" &&
+        run make -j$NUM_JOBS &&
         run make install
     ) ||
     panic "Could not build and install $PKG_NAME"
@@ -457,9 +497,16 @@ build_qemu_android () {
     # libffi is required by glib.
     do_autotools_package libffi
 
-    # libiconv is required by gettext on windows.
+    # Must define LIBFFI_CFLAGS and LIBFFI_LIBS to ensure
+    # that GLib picks it up properly. Note that libffi places
+    # its headers and libraries in uncommon places.
+    LIBFFI_VERSION=$(get_source_package_version libffi)
+    export LIBFFI_CFLAGS=-I$PREFIX/lib/libffi-$LIBFFI_VERSION/include
+    export LIBFFI_LIBS=$PREFIX/lib/libffi.la
+
+    # libiconv is required by gettext on windows and glib on OS X
     case $1 in
-        windows-*)
+        windows-*|darwin-*)
             do_autotools_package libiconv \
                 --disable-rpath \
             ;;
@@ -503,6 +550,15 @@ build_qemu_android () {
             ;;
     esac
 
+    # Export these to ensure that pkg-config picks them up properly.
+    export GLIB_CFLAGS="-I$PREFIX/include/glib-2.0 -I$PREFIX/lib/glib-2.0/include"
+    export GLIB_LIBS="$PREFIX/lib/libglib-2.0.la"
+    case $BUILD_OS in
+        darwin-*)
+            GLIB_LIBS="$GLIB_LIBS -lintl -liconv -Wl,-framework,Carbon -Wl,-framework,Foundation"
+            ;;
+    esac
+
     # pkg-config is required by qemu-android, and not available on
     # Windows and OS X
     do_autotools_package pkg-config \
@@ -516,12 +572,19 @@ build_qemu_android () {
         --disable-gtk \
         --disable-libpng
 
+    EXTRA_SDL_FLAGS=
+    case $BUILD_OS in
+        darwin-*)
+            EXTRA_SDL_FLAGS="--disable-video-x11"
+            ;;
+    esac
     do_autotools_package SDL \
         --disable-audio \
         --disable-joystick \
         --disable-cdrom \
         --disable-file \
-        --disable-threads
+        --disable-threads \
+        $EXTRA_SDL_FLAGS
 
     # The SDL build script install a buggy sdl.pc when cross-compiling for
     # Windows as a static library. I.e. it lacks many of the required
@@ -552,7 +615,15 @@ build_qemu_android () {
         run mkdir -p "$BUILD_DIR/qemu-android"
         run rm -rf "$BUILD_DIR"/qemu-android/*
         run cd "$BUILD_DIR/qemu-android"
-        EXTRA_LDFLAGS="-L$PREFIX/lib -static-libgcc -static-libstdc++"
+        EXTRA_LDFLAGS="-L$PREFIX/lib"
+        case $1 in
+           darwin-*)
+               EXTRA_LDFLAGS="$EXTRA_LDFLAGS -liconv -Wl,-framework,Carbon"
+               ;;
+           *)
+               EXTRA_LDFLAGS="$EXTRA_LDFLAGS -static-libgcc -static-libstdc++"
+               ;;
+        esac
         case $1 in
             windows-*)
                 ;;
@@ -560,8 +631,12 @@ build_qemu_android () {
                 EXTRA_LDFLAGS="$EXTRA_LDFLAGS -ldl -lm"
                 ;;
         esac
+        CROSS_PREFIX_FLAG=
+        if [ "$GNU_CONFIG_HOST_PREFIX" ]; then
+            CROSS_PREFIX_FLAG="--cross-prefix=$GNU_CONFIG_HOST_PREFIX"
+        fi
         run $QEMU_ANDROID/configure \
-            --cross-prefix=$CROSS_PREFIX \
+            $CROSS_PREFIX_FLAG \
             --target-list=aarch64-softmmu \
             --prefix=$PREFIX \
             --extra-cflags="-I$PREFIX/include" \
@@ -608,12 +683,23 @@ build_qemu_android () {
         "$BUILD_DIR"/qemu-android/aarch64-softmmu/qemu-system-aarch64$HOST_EXE_EXTENSION \
         "$BINARY_DIR"/qemu-system-aarch64$HOST_EXE_EXTENSION
 
-    run ${GNU_CONFIG_HOST}-strip "$BINARY_DIR"/qemu-system-aarch64$HOST_EXE_EXTENSION
+    run ${GNU_CONFIG_HOST_PREFIX}strip "$BINARY_DIR"/qemu-system-aarch64$HOST_EXE_EXTENSION
 }
 
-build_qemu_android linux-x86
-build_qemu_android linux-x86_64
-build_qemu_android windows-x86
-build_qemu_android windows-x86_64
+case $BUILD_OS in
+    linux-*)
+        build_qemu_android linux-x86
+        build_qemu_android linux-x86_64
+        build_qemu_android windows-x86
+        build_qemu_android windows-x86_64
+        ;;
+    darwin-*)
+        build_qemu_android darwin-x86_64
+        build_qemu_android darwin-x86
+        ;;
+    *)
+        panic "Your operating system is not supported!"
+        ;;
+esac
 
 echo "Done!"
