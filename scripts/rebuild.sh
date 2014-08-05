@@ -146,6 +146,7 @@ fi
 ORIGINAL_PATH=$PATH
 
 export PKG_CONFIG=$(which pkg-config 2>/dev/null)
+PKG_CONFIG=
 if [ "$PKG_CONFIG" ]; then
     log "Found pkg-config at: $PKG_CONFIG"
 else
@@ -329,6 +330,9 @@ prepare_build_for_host () {
       PATH=$TOOLCHAIN_WRAPPER_DIR:$PATH
       log "$CURRENT_TEXT Path: $(echo \"$PATH\" | tr ' ' '\n')"
     fi
+
+    # Save environment definitions to file.
+    set > $BUILD_DIR/environment.txt
 }
 
 # Handle zlib, only on Win32 because the zlib configure script
@@ -377,10 +381,10 @@ do_zlib_package () {
     ZLIB_PACKAGE=$(get_source_package_name zlib)
     unpack_archive "$ARCHIVE_DIR/$ZLIB_PACKAGE" "$BUILD_DIR"
     (
-        run cd "$BUILD_DIR/zlib-$ZLIB_VERSION"
-        export CROSS_PREFIX=${GNU_CONFIG_HOST_PREFIX}
-        run ./configure --prefix=$PREFIX
-        run make -j$NUM_JOBS
+        run cd "$BUILD_DIR/zlib-$ZLIB_VERSION" &&
+        export CROSS_PREFIX=${GNU_CONFIG_HOST_PREFIX} &&
+        run ./configure --prefix=$PREFIX &&
+        run make -j$NUM_JOBS &&
         run make install
     )
 }
@@ -471,8 +475,8 @@ do_autotools_package () {
             --disable-shared \
             --with-pic \
             "$@" &&
-        run make -j$NUM_JOBS &&
-        run make install
+        run make -j$NUM_JOBS V=1 &&
+        run make install V=1
     ) ||
     panic "Could not build and install $PKG_NAME"
 }
@@ -501,8 +505,21 @@ build_qemu_android () {
     # that GLib picks it up properly. Note that libffi places
     # its headers and libraries in uncommon places.
     LIBFFI_VERSION=$(get_source_package_version libffi)
-    export LIBFFI_CFLAGS=-I$PREFIX/lib/libffi-$LIBFFI_VERSION/include
-    export LIBFFI_LIBS=$PREFIX/lib/libffi.la
+    LIBFFI_CFLAGS="-I$PREFIX/lib/libffi-$LIBFFI_VERSION/include"
+    LIBFFI_LIBS="$PREFIX/lib/libffi.la"
+    if [ ! -f "$LIBFFI_LIBS" ]; then
+        LIBFFI_LIBS="$PREFIX/lib64/libffi.la"
+    fi
+    if [ ! -f "$LIBFFI_LIBS" ]; then
+        LIBFFI_LIBS="$PREFIX/lib32/libffi.la"
+    fi
+    if [ ! -f "$LIBFFI_LIBS" ]; then
+        panic "Cannot locate libffi libraries!"
+    fi
+
+    log "Using LIBFFI_CFLAGS=[$LIBFFI_CFLAGS]"
+    log "Using LIBFFI_LIBS=[$LIBFFI_LIBS]"
+    export LIBFFI_CFLAGS LIBFFI_LIBS
 
     # libiconv is required by gettext on windows and glib on OS X
     case $1 in
@@ -662,6 +679,7 @@ build_qemu_android () {
             --disable-vde \
             --disable-vhdx \
             --disable-vhost-net \
+            &&
 
             # The Windows parallel build fails early on, so try to catch
             # up later with -j1 to complete it.
@@ -684,6 +702,9 @@ build_qemu_android () {
         "$BINARY_DIR"/qemu-system-aarch64$HOST_EXE_EXTENSION
 
     run ${GNU_CONFIG_HOST_PREFIX}strip "$BINARY_DIR"/qemu-system-aarch64$HOST_EXE_EXTENSION
+
+    unset PKG_CONFIG PKG_CONFIG_PATH PKG_CONFIG_LIBDIR SDL_CONFIG
+    unset LIBFFI_CFLAGS LIBFFI_LIBS GLIB_CFLAGS GLIB_LIBS
 }
 
 case $BUILD_OS in

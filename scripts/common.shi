@@ -283,10 +283,10 @@ get_build_dll_extension () {
 get_build_num_cores () {
     case $(get_build_os) in
         linux)
-            grep -c -e processor /proc/cpuinfo
+            grep -c -e processor /proc/cpuinfo 2>/dev/null || echo 1
             ;;
         darwin|freebsd)
-            sysctl -n hw.ncpu
+            sysctl -n hw.ncpu 2>/dev/null || echo 1
             ;;
         windows|cygwin)
             echo "${NUMBER_OF_PROCESSORS:-1}"
