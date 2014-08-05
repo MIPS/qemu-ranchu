@@ -146,7 +146,6 @@ fi
 ORIGINAL_PATH=$PATH
 
 export PKG_CONFIG=$(which pkg-config 2>/dev/null)
-PKG_CONFIG=
 if [ "$PKG_CONFIG" ]; then
     log "Found pkg-config at: $PKG_CONFIG"
 else
