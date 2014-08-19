@@ -93,6 +93,18 @@ EOF
     exit 1
 fi
 
+# Sanity check: We need the 'ranchu' branch checked out in qemu-android
+if [ ! -f "$QEMU_ANDROID/hw/misc/android_pipe.c" ]; then
+    >&2 cat <<EOF
+ERROR: Your qemu-android checkout is not from the 'ranchu' branch. Please
+       run the following command an re-run this script:
+
+  (cd $QEMU_ANDROID && git checkout origin/ranchu)
+
+EOF
+    exit 1
+fi
+
 AOSP_SOURCE_DIR=$PARAM_2
 if [ ! -d "$AOSP_SOURCE_DIR"/prebuilts/gcc ]; then
     panic "Not a valid AOSP checkout directory: $AOSP_SOURCE_DIR"
