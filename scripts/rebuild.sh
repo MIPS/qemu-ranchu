@@ -425,19 +425,47 @@ require_program () {
     eval $VARNAME=\'$CMD\'
 }
 
+# Unpack and patch GLib sources
+# $1: Unversioned package name (e.g. 'glib')
+unpack_and_patch () {
+    local PKG_NAME="$1"
+    local PKG_VERSION PKG_PACKAGE PKG_PATCHES_DIR PKG_PATCHES_PACKAGE
+    local PKG_DIR PATCH
+    PKG_VERSION=$(get_source_package_version $PKG_NAME)
+    if [ -z "$PKG_VERSION" ]; then
+        panic "Cannot find version for package $PKG_NAME!"
+    fi
+    log "Extracting $PKG_NAME-$PKG_VERSION"
+    PKG_PACKAGE=$(get_source_package_name $PKG_NAME)
+    unpack_archive "$ARCHIVE_DIR/$PKG_PACKAGE" "$BUILD_DIR" ||
+    panic "Could not unpack $PKG_NAME-$PKG_VERSION"
+    PKG_DIR=$BUILD_DIR/$PKG_NAME-$PKG_VERSION
+
+    PKG_PATCHES_DIR=$PKG_NAME-$PKG_VERSION-patches
+    PKG_PATCHES_PACKAGE=$ARCHIVE_DIR/${PKG_PATCHES_DIR}.tar.xz
+    if [ -f "$PKG_PATCHES_PACKAGE" ]; then
+        log "Patching $PKG_NAME-$PKG_VERSION"
+        unpack_archive "$PKG_PATCHES_PACKAGE" "$BUILD_DIR"
+        for PATCH in $(cd "$BUILD_DIR" && ls "$PKG_PATCHES_DIR"/*.patch); do
+            log "Applying patch: $PATCH"
+            (cd "$PKG_DIR" && run patch -p1 < "../$PATCH") ||
+                    panic "Could not apply $PATCH"
+        done
+    fi
+}
+
 # Cross-compiling glib for Win32 is broken and requires special care.
 # The following was inspired by the glib.mk from MXE (http://mxe.cc/)
 # $1: bitness (32 or 64)
 do_windows_glib_package () {
+    unpack_and_patch glib
     local GLIB_VERSION GLIB_PACKAGE GLIB_DIR
     GLIB_VERSION=$(get_source_package_version glib)
+    GLIB_DIR=$BUILD_DIR/glib-$GLIB_VERSION
     dump "$CURRENT_TEXT Building glib-$GLIB_VERSION"
-    GLIB_PACKAGE=$(get_source_package_name glib)
     require_program GLIB_GENMARSHAL glib-genmarshal
     require_program GLIB_COMPILE_SCHEMAS glib-compile-schemas
     require_program GLIB_COMPILE_RESOURCES glib-compile-resources
-    unpack_archive "$ARCHIVE_DIR/$GLIB_PACKAGE" "$BUILD_DIR"
-    GLIB_DIR=$BUILD_DIR/glib-$GLIB_VERSION
     (
         run cd "$GLIB_DIR" &&
         export LDFLAGS="-L$PREFIX/lib -L$PREFIX/lib$1" &&
@@ -453,9 +481,8 @@ do_windows_glib_package () {
             --with-threads=win32 \
             --with-pcre=internal \
             --disable-debug \
-            --disable-gtk-doc \
-            --disable-gtk-doc-html \
             --disable-man \
+            --with-libiconv=no \
             GLIB_GENMARSHAL=$GLIB_GENMARSHAL \
             GLIB_COMPILE_SCHEMAS=$GLIB_COMPILE_SCHEMAS \
             GLIB_COMPILE_RESOURCES=$GLIB_COMPILE_RESOURCES &&
@@ -472,7 +499,7 @@ do_windows_glib_package () {
         run make -j$NUM_JOBS -C m4macros install &&
 
         # Missing -lole32 results in link failure later!
-        sed -i -e 's|\-lglib-2.0 -lintl|-lglib-2.0 -lole32 -lintl|g' \
+        sed -i -e 's|\-lglib-2.0|-lglib-2.0 -lole32|g' \
             $PREFIX/lib/pkgconfig/glib-2.0.pc
     )
 }
@@ -484,11 +511,10 @@ do_autotools_package () {
     local PKG PKG_VERSION PKG_NAME
     PKG=$1
     shift
+    unpack_and_patch $PKG
     PKG_VERSION=$(get_source_package_version $PKG)
     PKG_NAME=$(get_source_package_name $PKG)
     dump "$CURRENT_TEXT Building $PKG-$PKG_VERSION"
-    unpack_archive "$ARCHIVE_DIR/$PKG_NAME" "$BUILD_DIR" ||
-    panic "Could not unpack $PKG_NAME"
     (
         run cd "$BUILD_DIR/$PKG-$PKG_VERSION" &&
         export LDFLAGS="-L$PREFIX/lib" &&
@@ -546,26 +572,22 @@ build_qemu_android () {
     log "Using LIBFFI_LIBS=[$LIBFFI_LIBS]"
     export LIBFFI_CFLAGS LIBFFI_LIBS
 
-    # libiconv is required by gettext on windows and glib on OS X
+    # libiconv and gettext are needed on Darwin only
     case $1 in
-        windows-*|darwin-*)
-            do_autotools_package libiconv \
+        darwin-*)
+            do_autotools_package libiconv
+            do_autotools_package gettext \
                 --disable-rpath \
+                --disable-acl \
+                --disable-curses \
+                --disable-openmp \
+                --disable-java \
+                --disable-native-java \
+                --without-emacs \
+                --disable-c++ \
+                --without-libexpat-prefix
             ;;
     esac
-
-    # gettext is required by glib
-    do_autotools_package gettext \
-        --disable-rpath \
-        --disable-acl \
-        --disable-curses \
-        --disable-openmp \
-        --disable-java \
-        --disable-native-java \
-        --without-emacs \
-        --disable-c++ \
-        --without-libexpat-prefix \
-
 
     # glib is required by pkg-config and qemu-android
     case $1 in
@@ -580,15 +602,12 @@ build_qemu_android () {
                 --disable-always-build-tests \
                 --disable-debug \
                 --disable-fam \
-                --disable-gtk-doc \
-                --disable-gtk-doc-html \
-                --disable-gtk-doc-pdf \
+                --disable-included-printf \
                 --disable-installed-tests \
                 --disable-libelf \
                 --disable-man \
                 --disable-selinux \
-                --disable-xattr \
-                --enable-included-printf
+                --disable-xattr
             ;;
     esac
 
@@ -597,7 +616,7 @@ build_qemu_android () {
     export GLIB_LIBS="$PREFIX/lib/libglib-2.0.la"
     case $BUILD_OS in
         darwin-*)
-            GLIB_LIBS="$GLIB_LIBS -lintl -liconv -Wl,-framework,Carbon -Wl,-framework,Foundation"
+            GLIB_LIBS="$GLIB_LIBS -Wl,-framework,Carbon -Wl,-framework,Foundation"
             ;;
     esac
 
@@ -634,7 +653,7 @@ build_qemu_android () {
     # instead.
     case $1 in
         windows-*)
-            sed -i -e 's|^Libs: -L\${libdir}  -lmingw32 -lSDLmain -lSDL  -mwindows|Libs: -lmingw32 -lSDLmain -lSDL  -mwindows  -liconv -lm -luser32 -lgdi32 -lwinmm -ldxguid|g' $PREFIX/lib/pkgconfig/sdl.pc
+            sed -i -e 's|^Libs: -L\${libdir}  -lmingw32 -lSDLmain -lSDL  -mwindows|Libs: -lmingw32 -lSDLmain -lSDL  -mwindows -lm -luser32 -lgdi32 -lwinmm -ldxguid|g' $PREFIX/lib/pkgconfig/sdl.pc
             ;;
     esac
 
@@ -660,7 +679,7 @@ build_qemu_android () {
         EXTRA_LDFLAGS="-L$PREFIX/lib"
         case $1 in
            darwin-*)
-               EXTRA_LDFLAGS="$EXTRA_LDFLAGS -liconv -Wl,-framework,Carbon"
+               EXTRA_LDFLAGS="$EXTRA_LDFLAGS -Wl,-framework,Carbon"
                ;;
            *)
                EXTRA_LDFLAGS="$EXTRA_LDFLAGS -static-libgcc -static-libstdc++"
