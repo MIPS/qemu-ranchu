@@ -760,7 +760,6 @@ case $BUILD_OS in
         ;;
     darwin-*)
         build_qemu_android darwin-x86_64
-        build_qemu_android darwin-x86
         ;;
     *)
         panic "Your operating system is not supported!"
