@@ -3,10 +3,28 @@
 . $(dirname "$0")/common.shi
 shell_import build-defaults.shi
 
+case $(uname -s) in
+    Linux)
+        BUILD_OS=linux-x86_64
+        DEFAULT_SYSTEMS="linux-x86_64,windows-x86_64"
+        ;;
+    Darwin)
+        BUILD_OS=darwin-x86_64
+        DEFAULT_SYSTEMS="darwin-x86_64"
+        ;;
+    *)
+        panic "Your operating system is not supported!"
+        ;;
+esac
+
+# List of valid target systems.
+VALID_SYSTEMS="linux-x86,linux-x86_64,windows-x86,windows-x86_64,darwin-x86,darwin-x86_64"
+
 OPT_BUILD_DIR=
 OPT_HELP=
 OPT_NO_CCACHE=
 OPT_NUM_JOBS=
+OPT_SYSTEM=
 
 for OPT; do
     OPTARG=$(expr "x$OPT" : "x[^=]*=\(.*\)" || true)
@@ -28,6 +46,9 @@ for OPT; do
             ;;
         --quiet)
             decrement_verbosity
+            ;;
+        --system=*)
+            OPT_SYSTEM=$OPTARG
             ;;
         --verbose)
             increment_verbosity
@@ -61,6 +82,7 @@ Valid options:
     --help|-?           Print this message.
     --verbose           Increase verbosity.
     --quiet             Decrease verbosity.
+    --system=<list>     List of target systems [$DEFAULT_SYSTEMS].
     --build-dir=<path>  Use specific build directory (default is temporary).
     --no-ccache         Don't try to probe and use ccache during build.
     -j<count>           Run <count> parallel build jobs.
@@ -68,6 +90,24 @@ Valid options:
 
 EOF
     exit 0
+fi
+
+if [ "$OPT_SYSTEM" ]; then
+    SYSTEMS=$(commas_to_spaces "$OPT_SYSTEM")
+else
+    SYSTEMS=$(commas_to_spaces "$DEFAULT_SYSTEMS")
+    log "Auto-config: --system='$SYSTEMS'"
+fi
+
+# Sanity check
+BAD_SYSTEMS=
+for SYSTEM in $SYSTEMS; do
+    if ! list_contains "$VALID_SYSTEMS" "$SYSTEM"; then
+        BAD_SYSTEMS="$BAD_SYSTEMS $SYSTEM"
+    fi
+done
+if [ "$BAD_SYSTEMS" ]; then
+    panic "Invalid system name(s): [$BAD_SYSTEMS], use one of: $VALID_SYSTEMS"
 fi
 
 if [ "$PARAM_COUNT" != 2 ]; then
@@ -126,18 +166,6 @@ if [ ! -d "$ARCHIVE_DIR" ]; then
 fi
 ARCHIVE_DIR=$(cd "$ARCHIVE_DIR" && pwd -P)
 log "Using archive directory: $ARCHIVE_DIR"
-
-case $(uname -s) in
-    Linux)
-        BUILD_OS=linux-x86_64
-        ;;
-    Darwin)
-        BUILD_OS=darwin-x86_64
-        ;;
-    *)
-        panic "Your operating system is not supported!"
-        ;;
-esac
 
 case $BUILD_OS in
     darwin-*)
@@ -751,19 +779,8 @@ build_qemu_android () {
     unset LIBFFI_CFLAGS LIBFFI_LIBS GLIB_CFLAGS GLIB_LIBS
 }
 
-case $BUILD_OS in
-    linux-*)
-        build_qemu_android linux-x86
-        build_qemu_android linux-x86_64
-        build_qemu_android windows-x86
-        build_qemu_android windows-x86_64
-        ;;
-    darwin-*)
-        build_qemu_android darwin-x86_64
-        ;;
-    *)
-        panic "Your operating system is not supported!"
-        ;;
-esac
+for SYSTEM in $SYSTEMS; do
+    build_qemu_android $SYSTEM
+done
 
 echo "Done!"

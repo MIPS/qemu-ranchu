@@ -296,3 +296,24 @@ get_build_num_cores () {
             ;;
     esac
 }
+
+# Convert commas into spaces.
+# $1: input string
+# Out: input string, with each comma replaced by a space.
+commas_to_spaces () {
+    printf "%s" "$1" | tr ',' ' '
+}
+
+
+# Return success iff item |$2| is in list |$1|.
+# $1: input list
+# $2: item to find in list.
+list_contains () {
+    local ITEM
+    for ITEM in $(commas_to_spaces "$1"); do
+        if [ "$ITEM" = "$2" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
