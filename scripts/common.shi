@@ -304,6 +304,21 @@ commas_to_spaces () {
     printf "%s" "$1" | tr ',' ' '
 }
 
+# Convert spaces into commas
+# $1: input string
+# Out: input string, with contiguous spaces replaced by a comma.
+# NOTE: This also strips leading/trailing space.
+spaces_to_commas () {
+    local ITEM RET
+    for ITEM in $1; do
+        if [ -z "$RET" ]; then
+            RET=$ITEM
+        else
+            RET="$RET,$ITEM"
+        fi
+    done
+    printf "%s" "$RET"
+}
 
 # Return success iff item |$2| is in list |$1|.
 # $1: input list

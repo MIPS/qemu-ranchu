@@ -5,11 +5,11 @@ shell_import build-defaults.shi
 
 case $(uname -s) in
     Linux)
-        BUILD_OS=linux-x86_64
+        BUILD_OS=linux
         DEFAULT_SYSTEMS="linux-x86_64,windows-x86_64"
         ;;
     Darwin)
-        BUILD_OS=darwin-x86_64
+        BUILD_OS=darwin
         DEFAULT_SYSTEMS="darwin-x86_64"
         ;;
     *)
@@ -21,16 +21,20 @@ esac
 VALID_SYSTEMS="linux-x86,linux-x86_64,windows-x86,windows-x86_64,darwin-x86,darwin-x86_64"
 
 OPT_BUILD_DIR=
+OPT_DARWIN_SSH=
 OPT_HELP=
 OPT_NO_CCACHE=
 OPT_NUM_JOBS=
 OPT_SYSTEM=
 
 for OPT; do
-    OPTARG=$(expr "x$OPT" : "x[^=]*=\(.*\)" || true)
+    OPTARG=$(expr "x$OPT" : "x[^=]*=\\(.*\\)" || true)
     case $OPT in
         --build-dir=*)
             OPT_BUILD_DIR=$OPTARG
+            ;;
+        --darwin-ssh=*)
+            OPT_DARWIN_SSH=$OPTARG
             ;;
         --help|-?)
             OPT_HELP=true
@@ -83,6 +87,7 @@ Valid options:
     --verbose           Increase verbosity.
     --quiet             Decrease verbosity.
     --system=<list>     List of target systems [$DEFAULT_SYSTEMS].
+    --darwin-ssh=<host> Perform remote build through SSH.
     --build-dir=<path>  Use specific build directory (default is temporary).
     --no-ccache         Don't try to probe and use ccache during build.
     -j<count>           Run <count> parallel build jobs.
@@ -92,6 +97,9 @@ EOF
     exit 0
 fi
 
+##
+## Handle target system list
+##
 if [ "$OPT_SYSTEM" ]; then
     SYSTEMS=$(commas_to_spaces "$OPT_SYSTEM")
 else
@@ -99,7 +107,6 @@ else
     log "Auto-config: --system='$SYSTEMS'"
 fi
 
-# Sanity check
 BAD_SYSTEMS=
 for SYSTEM in $SYSTEMS; do
     if ! list_contains "$VALID_SYSTEMS" "$SYSTEM"; then
@@ -110,6 +117,35 @@ if [ "$BAD_SYSTEMS" ]; then
     panic "Invalid system name(s): [$BAD_SYSTEMS], use one of: $VALID_SYSTEMS"
 fi
 
+##
+## Handle remote darwin build
+##
+DARWIN_SSH=
+if [ "$OPT_DARWIN_SSH" ]; then
+    DARWIN_SSH=$OPT_DARWIN_SSH
+elif [ "$ANDROID_EMULATOR_DARWIN_SSH" ]; then
+    DARWIN_SSH=$ANDROID_EMULATOR_DARWIN_SSH
+    log "Auto-config: --darwin-ssh=$DARWIN_SSH  [ANDROID_EMULATOR_DARWIN_SSH]"
+fi
+
+if [ "$DARWIN_SSH" ]; then
+    HAS_DARWIN=
+    for SYSTEM in $(commas_to_spaces "$SYSTEMS"); do
+        case $SYSTEM in
+            darwin-*)
+                HAS_DARWIN=true
+                ;;
+        esac
+    done
+    if [ -z "$HAS_DARWIN" ]; then
+        SYSTEMS="$SYSTEMS darwin-x86_64"
+        log "Auto-config: --system='$SYSTEMS'  [darwin-ssh]"
+    fi
+fi
+
+##
+##  Parameters checks
+##
 if [ "$PARAM_COUNT" != 2 ]; then
     panic "This script requires two arguments, see --help for details."
 fi
@@ -168,7 +204,7 @@ ARCHIVE_DIR=$(cd "$ARCHIVE_DIR" && pwd -P)
 log "Using archive directory: $ARCHIVE_DIR"
 
 case $BUILD_OS in
-    darwin-*)
+    darwin)
         # Force the use of the 10.8 SDK on OS X, this
         # ensures that the generated binaries run properly
         # on that platform, and also avoids build failures
@@ -185,6 +221,18 @@ else
 fi
 run mkdir -p "$TEMP_DIR" ||
 panic "Could not create build directory: $TEMP_DIR"
+
+cleanup_temp_dir () {
+    rm -rf "$TEMP_DIR"
+    exit $1
+}
+
+if [ -z "$OPT_BUILD_DIR" ]; then
+    # Ensure temporary directory is deleted on script exit, unless
+    # --build-dir=<path> was used.
+    trap "cleanup_temp_dir 0" EXIT
+    trap "cleanup_temp_dir \$?" QUIT INT HUP
+fi
 
 log "Cleaning up build directory."
 run rm -rf "$TEMP_DIR"/*
@@ -643,7 +691,7 @@ build_qemu_android () {
     export GLIB_CFLAGS="-I$PREFIX/include/glib-2.0 -I$PREFIX/lib/glib-2.0/include"
     export GLIB_LIBS="$PREFIX/lib/libglib-2.0.la"
     case $BUILD_OS in
-        darwin-*)
+        darwin)
             GLIB_LIBS="$GLIB_LIBS -Wl,-framework,Carbon -Wl,-framework,Foundation"
             ;;
     esac
@@ -663,7 +711,7 @@ build_qemu_android () {
 
     EXTRA_SDL_FLAGS=
     case $BUILD_OS in
-        darwin-*)
+        darwin)
             EXTRA_SDL_FLAGS="--disable-video-x11"
             ;;
     esac
@@ -765,7 +813,7 @@ build_qemu_android () {
 
     dump "$CURRENT_TEXT Copying qemu-system-aarch64 to binaries/$CURRENT_HOST"
 
-    BINARY_DIR=$(dirname "$0")/../binaries/$CURRENT_HOST
+    BINARY_DIR=$(program_directory)/../binaries/$CURRENT_HOST
     run mkdir -p "$BINARY_DIR" ||
     panic "Could not create final directory: $BINARY_DIR"
 
@@ -779,7 +827,115 @@ build_qemu_android () {
     unset LIBFFI_CFLAGS LIBFFI_LIBS GLIB_CFLAGS GLIB_LIBS
 }
 
+# Perform a Darwin build through ssh to a remote machine.
+# $1: Darwin host name.
+# $2: List of darwin target systems to build for.
+do_remote_darwin_build () {
+    local PKG_TMP=/tmp/$USER-rebuild-darwin-ssh-$$
+    local PKG_SUFFIX=qemu-android-build
+    local PKG_DIR=$PKG_TMP/$PKG_SUFFIX
+    local PKG_TARBALL=$PKG_SUFFIX.tar.bz2
+    local DARWIN_SSH="$1"
+    local DARWIN_SYSTEMS="$2"
+
+    DARWIN_SYSTEMS=$(commas_to_spaces "$DARWIN_SYSTEMS")
+
+    dump "Creating tarball for remote darwin build."
+    run mkdir -p "$PKG_DIR" && run rm -rf "$PKG_DIR"/*
+    run cp -rp "$QEMU_ANDROID" "$PKG_DIR/qemu-android"
+    run mkdir -p "$PKG_DIR/aosp/prebuilts/gcc"
+    run cp -rp "$(program_directory)" "$PKG_DIR/scripts"
+    run cp -rp "$(program_directory)/../archive" "$PKG_DIR/archive"
+    local EXTRA_FLAGS=""
+
+    case $(get_verbosity) in
+        0)
+            # pass
+            ;;
+        1)
+            EXTRA_FLAGS="$EXTRA_FLAGS --verbose"
+            ;;
+        *)
+            EXTRA_FLAGS="$EXTRA_FLAGS --verbose --verbose"
+            ;;
+    esac
+
+    if [ "$OPT_NUM_JOBS" ]; then
+        EXTRA_FLAGS="$EXTRA_FLAGS -j$OPT_NUM_JOBS"
+    fi
+    if [ "$OPT_NO_CCACHE" ]; then
+        EXTRA_FLAGS="$EXTRA_FLAGS --no-ccache"
+    fi
+
+    # Generate a script to rebuild all binaries from sources.
+    # Note that the use of the '-l' flag is important to ensure
+    # that this is run under a login shell. This ensures that
+    # ~/.bash_profile is sourced before running the script, which
+    # puts MacPorts' /opt/local/bin in the PATH properly.
+    #
+    # If not, the build is likely to fail with a cryptic error message
+    # like "readlink: illegal option -- f"
+    cat > $PKG_DIR/build.sh <<EOF
+#!/bin/bash -l
+PROGDIR=\$(dirname \$0)
+\$PROGDIR/scripts/rebuild.sh \\
+    --build-dir=/tmp/$PKG_SUFFIX/build \\
+    --system=$(spaces_to_commas "$DARWIN_SYSTEMS") \\
+    $EXTRA_FLAGS \\
+    /tmp/$PKG_SUFFIX/qemu-android \\
+    /tmp/$PKG_SUFFIX/aosp
+EOF
+    chmod a+x $PKG_DIR/build.sh
+    run tar cjf "$PKG_TMP/$PKG_TARBALL" -C "$PKG_TMP" "$PKG_SUFFIX"
+
+    dump "Unpacking tarball in remote darwin host."
+    run scp "$PKG_TMP/$PKG_TARBALL" "$DARWIN_SSH":/tmp/
+    run ssh "$DARWIN_SSH" tar xf /tmp/$PKG_SUFFIX.tar.bz2 -C /tmp
+
+    dump "Performing remote darwin build."
+    run ssh "$DARWIN_SSH" /tmp/$PKG_SUFFIX/build.sh
+
+    dump "Retrieving darwin binaries."
+    local BINARY_DIR=$(program_directory)/../binaries
+    run mkdir -p "$BINARY_DIR" ||
+    panic "Could not create final directory: $BINARY_DIR"
+
+    for SYSTEM in $DARWIN_SYSTEMS; do
+        run scp -r "$DARWIN_SSH":/tmp/$PKG_SUFFIX/binaries/$SYSTEM $BINARY_DIR/
+    done
+}
+
+# Special handling for Darwin target systems.
+DARWIN_SYSTEMS=
 for SYSTEM in $SYSTEMS; do
+    case $SYSTEM in
+        darwin-*)
+            DARWIN_SYSTEMS="$DARWIN_SYSTEMS $SYSTEM"
+            ;;
+    esac
+done
+
+if [ "$DARWIN_SSH" ]; then
+    # Perform remote Darwin build first.
+    if [ "$DARWIN_SYSTEMS" ]; then
+        do_remote_darwin_build "$DARWIN_SSH" "$DARWIN_SYSTEMS"
+    elif [ "$OPT_DARWIN_SSH" ]; then
+        panic "--darwin-ssh=<host> used, but --system does not list Darwin systems."
+    fi
+elif [ "$DARWIN_SYSTEMS" -a "$BUILD_OS" != "darwin" ]; then
+    panic "Cannot build darwin binaries on this machine. Use --darwin-ssh=<host>."
+fi
+
+for SYSTEM in $SYSTEMS; do
+    # Ignore darwin builds if we're not on a Darwin
+    if [ "$BUILD_OS" != "darwin" ]; then
+        case "$SYSTEM" in
+            darwin-*)
+                continue
+                ;;
+        esac
+    fi
+
     build_qemu_android $SYSTEM
 done
 
