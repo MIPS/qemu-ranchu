@@ -82,6 +82,15 @@ directories to be available:
       Path to a checkout of an AOSP workspace. This is only used to
       use the prebuilts toolchains under prebuilts/gcc/
 
+By default, everything is rebuilt in a temporary directory that is
+automatically removed after script completion (and after the binaries are
+copied into binaries/). This is very long due to the dependencies.
+
+When performing incremental builds, it is HIGHLY recommended to use the
+--build-dir=<path> option. This ensures that the dependencies are only
+rebuilt once and kept under <path>. Note that the build directory will
+also not be removed by the script in this case.
+
 Valid options:
     --help|-?           Print this message.
     --verbose           Increase verbosity.
@@ -235,7 +244,7 @@ if [ -z "$OPT_BUILD_DIR" ]; then
 fi
 
 log "Cleaning up build directory."
-run rm -rf "$TEMP_DIR"/*
+run rm -rf "$TEMP_DIR"/build-*
 
 if [ "$OPT_NUM_JOBS" ]; then
     NUM_JONS=$OPT_NUM_JOBS
@@ -418,7 +427,7 @@ prepare_build_for_host () {
     run mkdir -p "$BUILD_DIR"
     run rm -rf "$BUILD_DIR"/*
 
-    PREFIX=$BUILD_DIR/install
+    PREFIX=$TEMP_DIR/install-$CURRENT_HOST
     log "$CURRENT_TEXT Using build prefix: $PREFIX"
     EXTRA_CFLAGS="$EXTRA_CFLAGS -I$PREFIX/include"
     EXTRA_CXXFLAGS="$EXTRA_CXXFLAGS -I$PREFIX/include"
@@ -608,13 +617,11 @@ do_autotools_package () {
     panic "Could not build and install $PKG_NAME"
 }
 
-# Assume you have called prepare_build_for_host previously.
 # $1: host os name.
-build_qemu_android () {
+build_qemu_android_deps () {
     prepare_build_for_host $1
 
     export PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig
-
     # Handle zlib for Windows
     case $1 in
         windows-*)
@@ -746,6 +753,35 @@ build_qemu_android () {
             ;;
     esac
     export SDL_CONFIG PKG_CONFIG PKG_CONFIG_LIBDIR
+
+    # Create script to setup the environment correctly for the
+    # later qemu-android build.
+    ENV_SH=$TEMP_DIR/env-$CURRENT_HOST.sh
+    cat > $ENV_SH <<EOF
+# Auto-generated automatically - DO NOT EDIT
+export PREFIX=$PREFIX
+export LIBFFI_CFLAGS="$LIBFFI_CFLAGS"
+export LIBFFI_LIBS="$LIBFFI_LIBS"
+export GLIB_CFLAGS="$GLIB_CFLAGS"
+export GLIB_LIBS="$GLIB_LIBS"
+export SDL_CONFIG=$SDL_CONFIG
+export PKG_CONFIG=$PKG_CONFIG
+export PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR
+export PKG_CONFIG_PATH=$PKG_CONFIG_PATH
+export PATH=$PATH
+EOF
+}
+
+# $1: host os name.
+build_qemu_android () {
+    prepare_build_for_host $1
+
+    ENV_SH=$TEMP_DIR/env-$CURRENT_HOST.sh
+    if [ ! -f "$ENV_SH" ]; then
+        build_qemu_android_deps $1
+    fi
+
+    . "$ENV_SH"
 
     dump "$CURRENT_TEXT Building qemu-android"
     (
