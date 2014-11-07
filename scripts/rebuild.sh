@@ -810,7 +810,7 @@ build_qemu_android () {
         fi
         run $QEMU_ANDROID/configure \
             $CROSS_PREFIX_FLAG \
-            --target-list=aarch64-softmmu \
+            --target-list=aarch64-softmmu,mips64el-softmmu \
             --prefix=$PREFIX \
             --extra-cflags="-I$PREFIX/include" \
             --extra-ldflags="$EXTRA_LDFLAGS" \
@@ -856,8 +856,12 @@ build_qemu_android () {
     run cp -p \
         "$BUILD_DIR"/qemu-android/aarch64-softmmu/qemu-system-aarch64$HOST_EXE_EXTENSION \
         "$BINARY_DIR"/qemu-system-aarch64$HOST_EXE_EXTENSION
+    run cp -p \
+        "$BUILD_DIR"/qemu-android/mips64el-softmmu/qemu-system-mips64el$HOST_EXE_EXTENSION \
+        "$BINARY_DIR"/qemu-system-mips64el$HOST_EXE_EXTENSION
 
     run ${GNU_CONFIG_HOST_PREFIX}strip "$BINARY_DIR"/qemu-system-aarch64$HOST_EXE_EXTENSION
+    run ${GNU_CONFIG_HOST_PREFIX}strip "$BINARY_DIR"/qemu-system-mips64el$HOST_EXE_EXTENSION
 
     unset PKG_CONFIG PKG_CONFIG_PATH PKG_CONFIG_LIBDIR SDL_CONFIG
     unset LIBFFI_CFLAGS LIBFFI_LIBS GLIB_CFLAGS GLIB_LIBS
